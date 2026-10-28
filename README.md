@@ -14,6 +14,7 @@ DaVinci Resolve doesn't support pinch-to-zoom on the timeline out of the box. Re
 - **Multi-monitor support** — works correctly across all display configurations, including Resolve's dual-screen mode
 - **Launch at Login** — start automatically with macOS
 - **Minimal footprint** — lives in the menu bar, uses no resources when Resolve isn't in focus
+- **Sleeps while Resolve is closed** — no event interception and, by default, no menu bar icon until Resolve opens
 - **Built-in diagnostics** — the menu shows which app is detected, how many gestures were handled, and why the last one was skipped
 - **Manual Resolve selection** — point the app at your Resolve install if auto-detection doesn't find it
 - **Fusion-aware pinch handling** — automatically passes pinch gestures through when Fusion is active, where Resolve provides native zoom
@@ -49,18 +50,22 @@ You only need to do this once. After that, the app opens normally.
 
 ## Usage
 
-Once running, ResolveZoom appears as an icon in the menu bar. Open DaVinci Resolve, place it in focus, and start pinching on your trackpad — the timeline will zoom in and out.
+Once running, ResolveZoom appears as an icon in the menu bar while DaVinci Resolve is open. Place Resolve in focus and start pinching on your trackpad — the timeline will zoom in and out.
+
+**While Resolve is closed, ResolveZoom sleeps.** It removes its event tap, so your trackpad and scroll input don't pass through it at all, stops its page and permission checks, and hides its menu bar icon. It wakes as soon as Resolve opens and goes back to sleep when Resolve quits (or crashes). It learns about both from macOS's app launch/quit notifications, so sleeping costs nothing. To reach the menu while Resolve is closed, open ResolveZoom again from Finder or Spotlight: the icon comes back and Preferences opens. To keep the icon visible all the time, turn off **Hide menu bar icon while Resolve is closed** in Preferences.
 
 **Menu bar status:**
 
 - 🟢 **DaVinci Resolve active** — gestures are being intercepted
-- ⚪ **Waiting for Resolve…** — Resolve is not in focus
+- ⚪ **Waiting for Resolve…** — Resolve is running but not in focus
+- ⚪ **Asleep — Resolve isn't running** — nothing is intercepted until Resolve opens
 - 🔴 **No accessibility permission** — grant access in System Settings
 
 **Preferences** (click the menu bar icon → Preferences…):
 
 - **Zoom Sensitivity** — controls how fast the timeline zooms. Default is 800; increase for faster zoom, decrease for finer control
 - **Invert zoom direction** — reverses the zoom direction if it feels unnatural
+- **Hide menu bar icon while Resolve is closed** — on by default
 - **Launch at Login** — toggle autostart with macOS
 
 ResolveZoom checks Resolve's active page once per second while Resolve is focused. The Accessibility scan runs on a background utility queue with a 50 ms IPC timeout, so an unresponsive Resolve UI cannot interrupt pinch handling.

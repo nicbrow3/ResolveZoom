@@ -6,20 +6,23 @@ import UniformTypeIdentifiers
 struct PreferencesView: View {
     @State private var multiplier: Double
     @State private var invertZoom: Bool
+    @State private var hideIconWhileResolveClosed: Bool
     @State private var launchAtLogin: Bool
 
-    let onSave: (Double, Bool, Bool) -> Void
+    let onSave: (Double, Bool, Bool, Bool) -> Void
     let onCancel: () -> Void
 
     private let defaultMultiplier = 800.0
 
     init(
-        multiplier: Double, invertZoom: Bool, launchAtLogin: Bool,
-        onSave: @escaping (Double, Bool, Bool) -> Void,
+        multiplier: Double, invertZoom: Bool, hideIconWhileResolveClosed: Bool,
+        launchAtLogin: Bool,
+        onSave: @escaping (Double, Bool, Bool, Bool) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _multiplier = State(initialValue: multiplier)
         _invertZoom = State(initialValue: invertZoom)
+        _hideIconWhileResolveClosed = State(initialValue: hideIconWhileResolveClosed)
         _launchAtLogin = State(initialValue: launchAtLogin)
         self.onSave = onSave
         self.onCancel = onCancel
@@ -58,11 +61,12 @@ struct PreferencesView: View {
             Form {
                 Section {
                     Toggle("Invert zoom direction", isOn: $invertZoom)
+                    Toggle("Hide menu bar icon while Resolve is closed", isOn: $hideIconWhileResolveClosed)
                     Toggle("Launch at Login", isOn: $launchAtLogin)
                 }
             }
             .formStyle(.grouped)
-            .frame(height: 130)
+            .frame(height: 174)
 
             Divider()
 
@@ -70,14 +74,16 @@ struct PreferencesView: View {
                 Spacer()
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.escape, modifiers: [])
-                Button("OK") { onSave(multiplier, invertZoom, launchAtLogin) }
+                Button("OK") {
+                    onSave(multiplier, invertZoom, hideIconWhileResolveClosed, launchAtLogin)
+                }
                     .keyboardShortcut(.return, modifiers: [])
                     .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(width: 360, height: 310)
+        .frame(width: 360, height: 354)
     }
 }
 
@@ -114,6 +120,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var invertZoom: Bool = false {
         didSet { defaults.set(invertZoom, forKey: "invertZoom") }
     }
+
+    /// Hide the menu bar icon while Resolve isn't running — the app is asleep then anyway.
+    /// Reopening the app from Finder or Spotlight brings it back (see
+    /// `applicationShouldHandleReopen`), so the menu and Quit are never out of reach.
+    var hideIconWhileResolveClosed: Bool = true {
+        didSet {
+            defaults.set(hideIconWhileResolveClosed, forKey: "hideIconWhileResolveClosed")
+            updateStatusItemVisibility()
+        }
+    }
+
+    /// True while DaVinci Resolve is running. While it isn't, the app sleeps: no event tap,
+    /// no page polling, no permission watchdog and, by default, no menu bar icon. Kept in
+    /// sync by NSWorkspace launch/terminate notifications, so sleeping costs nothing.
+    private var isResolveRunning = false
+    /// Set when the user reopens the app while it sleeps, so the icon (and with it the menu
+    /// and Quit) stays visible until Resolve's next launch-and-quit.
+    private var showIconUntilNextSleep = false
 
     // Scroll-artifact detection
     var lastMagnifyTime: Double = 0
@@ -181,6 +205,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loadSettings()
         setupMenuBar()
         refreshFrontmostApp()
+        observeResolveLifecycle()
         checkAccessibilityAndStart()
     }
 
@@ -192,6 +217,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? defaultMultiplier
             : defaults.double(forKey: "multiplier")
         invertZoom = defaults.bool(forKey: "invertZoom")
+        hideIconWhileResolveClosed =
+            defaults.object(forKey: "hideIconWhileResolveClosed") == nil
+            ? true
+            : defaults.bool(forKey: "hideIconWhileResolveClosed")
         resolveBundleIdOverride = defaults.string(forKey: "resolveBundleIdOverride") ?? ""
     }
 
@@ -219,6 +248,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         resolveBundleIdOverride = id
         refreshFrontmostApp()
+        refreshResolveRunning()
         updateStatus()
         presentInfo(
             title: "Resolve selected",
@@ -228,6 +258,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func clearResolveAppOverride() {
         resolveBundleIdOverride = ""
+        refreshResolveRunning()
         updateStatus()
     }
 
@@ -248,13 +279,96 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         cachedFrontmostBundleId = id
     }
 
+    // MARK: - Sleep while Resolve is closed
+
+    private func observeResolveLifecycle() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(
+            self, selector: #selector(runningApplicationsChanged(_:)),
+            name: NSWorkspace.didLaunchApplicationNotification, object: nil)
+        center.addObserver(
+            self, selector: #selector(runningApplicationsChanged(_:)),
+            name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        isResolveRunning = resolveIsRunning()
+        updateStatusItemVisibility()
+    }
+
+    @objc private func runningApplicationsChanged(_ notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        guard isResolveApp(app?.bundleIdentifier) else { return }
+        refreshResolveRunning()
+    }
+
+    /// `runningApplications` can still list an app while its terminate notification is
+    /// being delivered, so terminated entries are skipped explicitly.
+    private func resolveIsRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains {
+            !$0.isTerminated && isResolveApp($0.bundleIdentifier)
+        }
+    }
+
+    /// Wakes or sleeps when Resolve's running state changes. A crash ends the process just
+    /// like a quit, so both arrive as the same terminate notification.
+    func refreshResolveRunning() {
+        let running = resolveIsRunning()
+        guard running != isResolveRunning else { return }
+        isResolveRunning = running
+        if running {
+            updateStatusItemVisibility()
+            checkAccessibilityAndStart()
+        } else {
+            goToSleep()
+        }
+    }
+
+    /// Starts interception only while Resolve is running; otherwise the app stays asleep.
+    private func startIfResolveRunning() {
+        guard isResolveRunning else {
+            updateStatus()
+            return
+        }
+        setupEventTap()
+        startFusionPolling()
+        updateStatus()
+        startPermissionWatchdog()
+    }
+
+    private func goToSleep() {
+        // While trusted, `permissionTimer` is the 2 s revocation watchdog, which has nothing
+        // left to guard once the tap is gone. While untrusted it is first-run setup waiting
+        // for the grant, and keeps running so the grant is still picked up.
+        if AXIsProcessTrusted() {
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+        }
+        disableEventTap()  // also stops Fusion polling
+        zoomAccumulator = 0
+        consecutiveMagnifyCount = 0
+        showIconUntilNextSleep = false
+        updateStatusItemVisibility()
+        updateStatus()
+    }
+
+    func updateStatusItemVisibility() {
+        guard let item = statusItem else { return }
+        item.isVisible = isResolveRunning || !hideIconWhileResolveClosed || showIconUntilNextSleep
+    }
+
+    /// Opening the app again (Finder, Spotlight) while its icon is hidden brings the icon
+    /// back and opens Preferences, so settings and Quit stay reachable without Resolve.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool)
+        -> Bool
+    {
+        showIconUntilNextSleep = true
+        updateStatusItemVisibility()
+        openPreferences()
+        return false
+    }
+
     // MARK: - Accessibility
     func checkAccessibilityAndStart() {
         if AXIsProcessTrusted() {
-            setupEventTap()
-            startFusionPolling()
-            updateStatus()
-            startPermissionWatchdog()
+            startIfResolveRunning()
         } else {
             // Tear down any running timer before scheduling a new one. Previously the
             // 2 s watchdog stayed scheduled while this method overwrote `permissionTimer`
@@ -278,9 +392,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         guard let self = self else { return }
                         if self.permissionTimer === timer { self.permissionTimer = nil }
                         self.closePermissionsWindow()
-                        self.setupEventTap()
-                        self.updateStatus()
-                        self.startPermissionWatchdog()
+                        self.startIfResolveRunning()
                     }
                 }
             }
@@ -912,11 +1024,13 @@ guard let children = value as? [AXUIElement] else { return .unavailable }
         let view = PreferencesView(
             multiplier: multiplier,
             invertZoom: invertZoom,
+            hideIconWhileResolveClosed: hideIconWhileResolveClosed,
             launchAtLogin: isAutolaunchEnabled(),
-            onSave: { [weak self] mult, invert, login in
+            onSave: { [weak self] mult, invert, hideIcon, login in
                 guard let self = self else { return }
                 self.multiplier = mult
                 self.invertZoom = invert
+                self.hideIconWhileResolveClosed = hideIcon
                 self.setAutolaunch(login)
                 self.preferencesWindow?.close()
             },
@@ -960,6 +1074,9 @@ guard let children = value as? [AXUIElement] else { return .unavailable }
         let (text, color): (String, NSColor) = {
             if !AXIsProcessTrusted() {
                 return ("⬤  No accessibility permission", .systemRed)
+            }
+            if !isResolveRunning {
+                return ("⬤  Asleep — Resolve isn't running", .secondaryLabelColor)
             }
             // Uses the cached id, which deliberately ignores this app itself — opening
             // this very menu would otherwise make us the frontmost app and the line

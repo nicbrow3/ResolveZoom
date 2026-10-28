@@ -2,6 +2,22 @@
 
 All notable changes to ResolveZoom are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Sleeps while Resolve is closed.** ResolveZoom now watches for DaVinci Resolve launching
+  and quitting (via NSWorkspace notifications, so there is no polling). While Resolve isn't
+  running, the event tap is removed and the page poll and permission watchdog stop, and by
+  default the menu bar icon is hidden. Opening ResolveZoom again from Finder or Spotlight
+  shows the icon and opens Preferences. Preferences → "Hide menu bar icon while Resolve is
+  closed" keeps the icon visible instead.
+
+### Fixed
+
+- After granting Accessibility permission for the first time, the Fusion page check now
+  starts right away instead of only after the next relaunch.
+
 ## [0.4] — 2026-08-08
 
 The headline of this release is a memory leak that made the app grow without bound
