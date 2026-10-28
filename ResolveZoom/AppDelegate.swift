@@ -6,20 +6,22 @@ import UniformTypeIdentifiers
 struct PreferencesView: View {
     @State private var multiplier: Double
     @State private var invertZoom: Bool
+    @State private var stopMomentumOnPointerMove: Bool
     @State private var launchAtLogin: Bool
 
-    let onSave: (Double, Bool, Bool) -> Void
+    let onSave: (Double, Bool, Bool, Bool) -> Void
     let onCancel: () -> Void
 
     private let defaultMultiplier = 800.0
 
     init(
-        multiplier: Double, invertZoom: Bool, launchAtLogin: Bool,
-        onSave: @escaping (Double, Bool, Bool) -> Void,
+        multiplier: Double, invertZoom: Bool, stopMomentumOnPointerMove: Bool, launchAtLogin: Bool,
+        onSave: @escaping (Double, Bool, Bool, Bool) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _multiplier = State(initialValue: multiplier)
         _invertZoom = State(initialValue: invertZoom)
+        _stopMomentumOnPointerMove = State(initialValue: stopMomentumOnPointerMove)
         _launchAtLogin = State(initialValue: launchAtLogin)
         self.onSave = onSave
         self.onCancel = onCancel
@@ -58,11 +60,12 @@ struct PreferencesView: View {
             Form {
                 Section {
                     Toggle("Invert zoom direction", isOn: $invertZoom)
+                    Toggle("Stop scroll momentum when the mouse moves", isOn: $stopMomentumOnPointerMove)
                     Toggle("Launch at Login", isOn: $launchAtLogin)
                 }
             }
             .formStyle(.grouped)
-            .frame(height: 130)
+            .frame(height: 174)
 
             Divider()
 
@@ -70,14 +73,16 @@ struct PreferencesView: View {
                 Spacer()
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.escape, modifiers: [])
-                Button("OK") { onSave(multiplier, invertZoom, launchAtLogin) }
+                Button("OK") {
+                    onSave(multiplier, invertZoom, stopMomentumOnPointerMove, launchAtLogin)
+                }
                     .keyboardShortcut(.return, modifiers: [])
                     .buttonStyle(.borderedProminent)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(width: 360, height: 310)
+        .frame(width: 360, height: 354)
     }
 }
 
@@ -115,10 +120,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         didSet { defaults.set(invertZoom, forKey: "invertZoom") }
     }
 
+    /// See `stopMomentumIfPointerMoved`. On by default: it only acts when a second pointing
+    /// device moves the pointer during trackpad scroll momentum, so trackpad-only users never see it.
+    var stopMomentumOnPointerMove: Bool = true {
+        didSet { defaults.set(stopMomentumOnPointerMove, forKey: "stopMomentumOnPointerMove") }
+    }
+
     // Scroll-artifact detection
     var lastMagnifyTime: Double = 0
     var lastMagnifySign: Double = 0
     var lastHorizontalScrollTime: Double = 0
+
+    /// Pointer position when the current trackpad momentum scroll began; nil when none is
+    /// in progress. See `stopMomentumIfPointerMoved`.
+    var momentumOrigin: CGPoint?
+    var momentumStopped = false
+    /// How far the pointer may drift during momentum before we treat it as deliberately moved.
+    let momentumStopDistance: CGFloat = 15
 
     // Consecutive event counter — filters out accidental taps/clicks
     var consecutiveMagnifyCount: Int = 0
@@ -192,6 +210,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ? defaultMultiplier
             : defaults.double(forKey: "multiplier")
         invertZoom = defaults.bool(forKey: "invertZoom")
+        stopMomentumOnPointerMove =
+            defaults.object(forKey: "stopMomentumOnPointerMove") == nil
+            ? true
+            : defaults.bool(forKey: "stopMomentumOnPointerMove")
         resolveBundleIdOverride = defaults.string(forKey: "resolveBundleIdOverride") ?? ""
     }
 
@@ -246,6 +268,54 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // menu permanently read "Waiting for Resolve…" even while Resolve is in use.
         if id == Bundle.main.bundleIdentifier { return }
         cachedFrontmostBundleId = id
+    }
+
+    /// macOS keeps delivering momentum scroll events for up to ~1.5 s after the
+    /// fingers lift, each stamped with the pointer's *current* position, and Resolve routes
+    /// every one of them by that position. With a mouse alongside the trackpad, moving the
+    /// pointer mid-scroll carries the momentum into whatever is now under it — scroll the video
+    /// tracks, reach for a clip in the audio tracks, and the audio tracks scroll instead.
+    /// Touching the trackpad already stops momentum; this makes moving the pointer do the same.
+    /// The rest of the momentum is zeroed rather than dropped, so Resolve still sees its phases
+    /// run through to the end.
+    func stopMomentumIfPointerMoved(_ event: CGEvent) {
+        guard stopMomentumOnPointerMove, isResolveApp(cachedFrontmostBundleId) else { return }
+
+        // A new finger scroll (began / may-begin) starts with a clean slate.
+        let scrollPhase = event.getIntegerValueField(.scrollWheelEventScrollPhase)
+        if scrollPhase == 1 || scrollPhase == 128 {
+            momentumOrigin = nil
+            momentumStopped = false
+        }
+
+        let momentumPhase = event.getIntegerValueField(.scrollWheelEventMomentumPhase)
+        guard momentumPhase != 0 else { return }  // not momentum
+
+        let location = event.location
+        if let origin = momentumOrigin {
+            if !momentumStopped,
+                hypot(location.x - origin.x, location.y - origin.y) > momentumStopDistance
+            {
+                momentumStopped = true
+            }
+        } else {
+            // Momentum phase 1 = begin. Also covers momentum we joined part-way through.
+            momentumOrigin = location
+        }
+
+        if momentumStopped {
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
+            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: 0)
+            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: 0)
+            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: 0)
+            event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: 0)
+            event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: 0)
+        }
+
+        if momentumPhase == 3 {  // end
+            momentumOrigin = nil
+            momentumStopped = false
+        }
     }
 
     // MARK: - Accessibility
@@ -461,6 +531,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if abs(deltaH1) > 0 || abs(deltaH2) > 0 {
                         delegate.lastHorizontalScrollTime = CFAbsoluteTimeGetCurrent()
                     }
+                    delegate.stopMomentumIfPointerMoved(event)
                     return Unmanaged.passUnretained(event)
                 }
 
@@ -912,11 +983,13 @@ guard let children = value as? [AXUIElement] else { return .unavailable }
         let view = PreferencesView(
             multiplier: multiplier,
             invertZoom: invertZoom,
+            stopMomentumOnPointerMove: stopMomentumOnPointerMove,
             launchAtLogin: isAutolaunchEnabled(),
-            onSave: { [weak self] mult, invert, login in
+            onSave: { [weak self] mult, invert, stopMomentum, login in
                 guard let self = self else { return }
                 self.multiplier = mult
                 self.invertZoom = invert
+                self.stopMomentumOnPointerMove = stopMomentum
                 self.setAutolaunch(login)
                 self.preferencesWindow?.close()
             },

@@ -2,6 +2,18 @@
 
 All notable changes to ResolveZoom are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Scroll momentum no longer carries over when you move the mouse.** macOS keeps sending
+  momentum scroll events after the fingers lift, each aimed at whatever is under the
+  pointer, and Resolve routes them by that position. Moving a mouse mid-scroll scrolled
+  whichever panel the pointer reached (e.g. from the video tracks into the audio tracks).
+  While Resolve is focused, momentum now stops once the pointer moves more than 15 points;
+  the remaining momentum events still arrive, with zero deltas, so their phases complete.
+  On by default; Preferences → "Stop scroll momentum when the mouse moves" turns it off.
+
 ## [0.4] — 2026-08-08
 
 The headline of this release is a memory leak that made the app grow without bound

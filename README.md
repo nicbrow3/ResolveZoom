@@ -17,6 +17,7 @@ DaVinci Resolve doesn't support pinch-to-zoom on the timeline out of the box. Re
 - **Built-in diagnostics** — the menu shows which app is detected, how many gestures were handled, and why the last one was skipped
 - **Manual Resolve selection** — point the app at your Resolve install if auto-detection doesn't find it
 - **Fusion-aware pinch handling** — automatically passes pinch gestures through when Fusion is active, where Resolve provides native zoom
+- **Mouse stops scroll momentum** — moving the pointer with a mouse stops trackpad scroll momentum, so it can't carry over into whatever panel the pointer reaches
 
 If ResolveZoom saves you time, consider buying me a coffee — it helps keep the project going! [![Ko-fi](https://img.shields.io/badge/Buy%20me%20a%20coffee-ko--fi-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/marcinkusnierz)
 
@@ -61,9 +62,12 @@ Once running, ResolveZoom appears as an icon in the menu bar. Open DaVinci Resol
 
 - **Zoom Sensitivity** — controls how fast the timeline zooms. Default is 800; increase for faster zoom, decrease for finer control
 - **Invert zoom direction** — reverses the zoom direction if it feels unnatural
+- **Stop scroll momentum when the mouse moves** — on by default; see below
 - **Launch at Login** — toggle autostart with macOS
 
 ResolveZoom checks Resolve's active page once per second while Resolve is focused. The Accessibility scan runs on a background utility queue with a 50 ms IPC timeout, so an unresponsive Resolve UI cannot interrupt pinch handling.
+
+**Scroll momentum and a mouse:** after a two-finger scroll, macOS keeps sending momentum scroll events for a second or so, each aimed at whatever is under the pointer at that moment. If you also use a mouse, moving it mid-scroll used to carry the momentum into another part of Resolve — scroll the video tracks, reach for a clip in the audio tracks, and the audio tracks scroll instead. While Resolve is focused, ResolveZoom now stops the momentum once the pointer moves more than 15 points, the same way touching the trackpad does. Momentum you don't interrupt is left exactly as it is. Turn it off with **Stop scroll momentum when the mouse moves** in Preferences.
 
 ---
 
